@@ -3,7 +3,7 @@
  * Plugin Name: 博客文章与图片迁移工具
  * Plugin URI: https://www.maotk.com/
  * Description: 在 WordPress 网站之间迁移博客文章、正文、分类标签、特色图、正文图片和阅读量。
- * Version: 1.2.1
+ * Version: 1.3.0
  * Author: Mao TK
  * Author URI: https://www.maotk.com/
  * Requires at least: 5.8
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class MaoTK_Blog_Media_Migrator {
-	const VERSION           = '1.2.1';
+	const VERSION           = '1.3.0';
 	const PAGE              = 'maotk-blog-media-migrator';
 	const BRAND_URL         = 'https://www.maotk.com/';
 	const BRAND_LOGO        = 'https://www.maotk.com/wp-content/uploads/maotk-favicon.svg';
@@ -32,6 +32,7 @@ final class MaoTK_Blog_Media_Migrator {
 		add_action( 'admin_menu', array( __CLASS__, 'admin_menu' ) );
 		add_action( 'admin_post_maotk_bmm_export', array( __CLASS__, 'export' ) );
 		add_action( 'admin_post_maotk_bmm_import', array( __CLASS__, 'import' ) );
+		add_action( 'wp_ajax_maotk_bmm_progress', array( __CLASS__, 'ajax_progress' ) );
 		add_filter( 'plugin_row_meta', array( __CLASS__, 'plugin_row_meta' ), 10, 2 );
 	}
 
@@ -58,9 +59,43 @@ final class MaoTK_Blog_Media_Migrator {
 		}
 	}
 
+	public static function ajax_progress() {
+		self::require_access();
+		check_ajax_referer( 'maotk_bmm_progress', 'nonce' );
+		$token = isset( $_POST['token'] ) ? sanitize_key( wp_unslash( $_POST['token'] ) ) : '';
+		$data  = $token ? get_transient( self::progress_key( $token ) ) : false;
+		wp_send_json_success( $data ? $data : array( 'status' => 'pending' ) );
+	}
+
+	private static function progress_key( $token ) {
+		return 'maotk_bmm_progress_' . get_current_user_id() . '_' . $token;
+	}
+
+	private static function set_progress( $token, $completed, $total, $stage, $current = '', $status = 'running' ) {
+		if ( ! $token ) {
+			return;
+		}
+		$old = get_transient( self::progress_key( $token ) );
+		set_transient(
+			self::progress_key( $token ),
+			array(
+				'status'     => $status,
+				'completed'  => max( 0, (int) $completed ),
+				'total'      => max( 1, (int) $total ),
+				'stage'      => sanitize_text_field( $stage ),
+				'current'    => sanitize_text_field( $current ),
+				'started_at' => is_array( $old ) && ! empty( $old['started_at'] ) ? (float) $old['started_at'] : microtime( true ),
+				'updated_at' => microtime( true ),
+			),
+			HOUR_IN_SECONDS
+		);
+	}
+
 	public static function render_page() {
 		self::require_access();
 		$export_token = wp_generate_password( 20, false, false );
+		$import_token = wp_generate_password( 20, false, false );
+		$progress_nonce = wp_create_nonce( 'maotk_bmm_progress' );
 		$post_counts  = wp_count_posts( 'post', 'readable' );
 
 		if ( ! class_exists( 'ZipArchive' ) ) {
@@ -165,6 +200,7 @@ final class MaoTK_Blog_Media_Migrator {
 				<p>上传本插件导出的 ZIP。建议先备份新站数据库和 uploads 目录。</p>
 				<form id="maotk-bmm-import-form" method="post" enctype="multipart/form-data" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 					<input type="hidden" name="action" value="maotk_bmm_import">
+					<input type="hidden" name="progress_token" value="<?php echo esc_attr( $import_token ); ?>">
 					<?php wp_nonce_field( 'maotk_bmm_import' ); ?>
 					<p><input type="file" name="migration_package" accept=".zip,application/zip" required></p>
 					<p>
@@ -197,8 +233,9 @@ final class MaoTK_Blog_Media_Migrator {
 					<h2 id="maotk-bmm-progress-title" style="margin-top:0">正在处理</h2>
 					<p id="maotk-bmm-progress-text">正在准备，请不要关闭页面。</p>
 					<div style="height:18px;background:#e5e7eb;border-radius:999px;overflow:hidden;">
-						<div id="maotk-bmm-progress-bar" style="height:100%;width:3%;background:#2271b1;border-radius:999px;transition:width .6s ease;"></div>
+						<div id="maotk-bmm-progress-bar" style="height:100%;width:0;background:#2271b1;border-radius:999px;transition:width .35s ease;"></div>
 					</div>
+					<p style="display:flex;justify-content:space-between;margin:10px 0 0"><strong id="maotk-bmm-progress-percent">0%</strong><span id="maotk-bmm-progress-eta">预计剩余：计算中</span></p>
 					<p id="maotk-bmm-progress-time" style="color:#646970;margin-bottom:0">已用时：0 秒</p>
 				</div>
 			</div>
@@ -210,7 +247,13 @@ final class MaoTK_Blog_Media_Migrator {
 			const text = document.getElementById('maotk-bmm-progress-text');
 			const bar = document.getElementById('maotk-bmm-progress-bar');
 			const time = document.getElementById('maotk-bmm-progress-time');
+			const percentText = document.getElementById('maotk-bmm-progress-percent');
+			const etaText = document.getElementById('maotk-bmm-progress-eta');
+			const ajaxUrl = <?php echo wp_json_encode( admin_url( 'admin-ajax.php' ) ); ?>;
+			const progressNonce = <?php echo wp_json_encode( $progress_nonce ); ?>;
 			let timer = null;
+			let progressPoll = null;
+			let startedAt = 0;
 
 			function cookieValue(name) {
 				const match = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/([.$?*|{}()[\]\\/+^])/g, '\\$1') + '=([^;]*)'));
@@ -219,28 +262,58 @@ final class MaoTK_Blog_Media_Migrator {
 			function clearCookie(name) {
 				document.cookie = name + '=; Max-Age=0; path=<?php echo esc_js( COOKIEPATH ? COOKIEPATH : '/' ); ?>; SameSite=Lax';
 			}
-			function startProgress(mode) {
+			function formatDuration(seconds) {
+				seconds = Math.max(0, Math.round(seconds));
+				if (seconds < 60) return seconds + ' 秒';
+				const minutes = Math.floor(seconds / 60);
+				const remain = seconds % 60;
+				if (minutes < 60) return minutes + ' 分 ' + remain + ' 秒';
+				return Math.floor(minutes / 60) + ' 小时 ' + (minutes % 60) + ' 分';
+			}
+			async function readProgress(token) {
+				try {
+					const body = new URLSearchParams({action:'maotk_bmm_progress', nonce:progressNonce, token:token});
+					const response = await fetch(ajaxUrl, {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'}, body:body.toString()});
+					const json = await response.json();
+					if (!json.success || !json.data || json.data.status === 'pending') return;
+					const data = json.data;
+					const total = Math.max(1, Number(data.total) || 1);
+					const completed = Math.max(0, Number(data.completed) || 0);
+					const percent = data.status === 'finished' ? 100 : Math.min(99, Math.floor(completed / total * 100));
+					bar.style.width = percent + '%';
+					percentText.textContent = percent + '%（' + completed + ' / ' + total + '）';
+					text.textContent = (data.stage || '正在处理') + (data.current ? '：' + data.current : '');
+					const elapsed = Math.max(1, Date.now() / 1000 - (Number(data.started_at) || startedAt / 1000));
+					const rate = completed / elapsed;
+					etaText.textContent = rate > 0 && completed < total ? '预计剩余：' + formatDuration((total - completed) / rate) : (completed >= total ? '预计剩余：0 秒' : '预计剩余：计算中');
+				} catch (error) {
+					etaText.textContent = '预计剩余：等待服务器进度';
+				}
+			}
+			function startProgress(mode, token) {
 				let seconds = 0;
-				let percent = 3;
+				startedAt = Date.now();
 				overlay.style.display = 'flex';
 				title.textContent = mode === 'export' ? '正在导出文章' : '正在导入文章';
 				text.textContent = mode === 'export'
 					? '正在收集文章、阅读量和图片，并生成 ZIP 迁移包。'
 					: '正在上传并写入文章、分类、阅读量和图片，请不要刷新页面。';
-				bar.style.width = percent + '%';
+				bar.style.width = '0%';
+				percentText.textContent = '0%';
+				etaText.textContent = '预计剩余：计算中';
 				timer = window.setInterval(function () {
 					seconds++;
-					percent = Math.min(94, percent + (percent < 55 ? 2.1 : percent < 80 ? .8 : .25));
-					bar.style.width = percent + '%';
-					time.textContent = '已用时：' + seconds + ' 秒';
-					if (mode === 'export' && seconds > 12) {
-						text.textContent = '图片较多时打包会花一些时间，服务器仍在处理中。';
-					}
+					time.textContent = '已用时：' + formatDuration(seconds);
 				}, 1000);
+				progressPoll = window.setInterval(function () { readProgress(token); }, 800);
+				readProgress(token);
 			}
 			function finishExport(count) {
 				window.clearInterval(timer);
+				window.clearInterval(progressPoll);
 				bar.style.width = '100%';
+				percentText.textContent = '100%（' + count + ' / ' + count + '）';
+				etaText.textContent = '预计剩余：0 秒';
 				title.textContent = '导出完成';
 				text.textContent = '已打包 ' + count + ' 篇文章，浏览器应已开始下载迁移包。';
 				window.setTimeout(function () { overlay.style.display = 'none'; }, 2200);
@@ -257,7 +330,7 @@ final class MaoTK_Blog_Media_Migrator {
 				const token = exportForm.querySelector('input[name="export_token"]').value;
 				const cookieName = 'maotk_bmm_export_' + token;
 				clearCookie(cookieName);
-				startProgress('export');
+				startProgress('export', token);
 				const poll = window.setInterval(function () {
 					const result = cookieValue(cookieName);
 					if (result.indexOf('done-') === 0) {
@@ -275,7 +348,7 @@ final class MaoTK_Blog_Media_Migrator {
 			});
 
 			document.getElementById('maotk-bmm-import-form').addEventListener('submit', function () {
-				startProgress('import');
+				startProgress('import', this.querySelector('[name="progress_token"]').value);
 			});
 		}());
 		</script>
@@ -314,6 +387,10 @@ final class MaoTK_Blog_Media_Migrator {
 				'update_post_term_cache' => false,
 			)
 		);
+		$progress_token = isset( $_POST['export_token'] ) ? sanitize_key( wp_unslash( $_POST['export_token'] ) ) : '';
+		$progress_total = max( 1, count( $post_ids ) );
+		$progress_done  = 0;
+		self::set_progress( $progress_token, 0, $progress_total, '正在准备文章数据' );
 
 		$tmp_zip = wp_tempnam( 'blog-migration.zip' );
 		if ( ! $tmp_zip ) {
@@ -338,8 +415,11 @@ final class MaoTK_Blog_Media_Migrator {
 		foreach ( $post_ids as $post_id ) {
 			$post = get_post( $post_id );
 			if ( ! $post ) {
+				++$progress_done;
+				self::set_progress( $progress_token, $progress_done, $progress_total, '正在导出文章', '无效文章 ID：' . $post_id );
 				continue;
 			}
+			self::set_progress( $progress_token, $progress_done, $progress_total, '正在打包文章和图片', $post->post_title );
 			$asset_urls = self::extract_image_urls( $post->post_content );
 			$thumb_id   = get_post_thumbnail_id( $post_id );
 			$thumb_url  = $thumb_id ? wp_get_attachment_url( $thumb_id ) : '';
@@ -374,6 +454,8 @@ final class MaoTK_Blog_Media_Migrator {
 				'featured_image'   => $thumb_url,
 				'reading_meta'     => self::get_reading_meta( $post_id ),
 			);
+			++$progress_done;
+			self::set_progress( $progress_token, $progress_done, $progress_total, '正在导出文章', $post->post_title );
 		}
 
 		$json = wp_json_encode( $manifest, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
@@ -383,10 +465,11 @@ final class MaoTK_Blog_Media_Migrator {
 			wp_die( '无法写入迁移清单。' );
 		}
 		$zip->close();
+		self::set_progress( $progress_token, $progress_total, $progress_total, '导出完成', '', 'finished' );
 
 		$filename = 'wordpress-blog-' . gmdate( 'Y-m-d-His' ) . '.zip';
 		nocache_headers();
-		$export_token = isset( $_POST['export_token'] ) ? sanitize_key( wp_unslash( $_POST['export_token'] ) ) : '';
+		$export_token = $progress_token;
 		if ( $export_token ) {
 			setcookie(
 				'maotk_bmm_export_' . $export_token,
@@ -723,15 +806,23 @@ final class MaoTK_Blog_Media_Migrator {
 		);
 		$update_existing = ! empty( $_POST['update_existing'] );
 		$preserve_status = ! empty( $_POST['preserve_status'] );
-		$asset_map       = self::import_assets( $zip, $manifest['assets'], $result );
+		$progress_token  = isset( $_POST['progress_token'] ) ? sanitize_key( wp_unslash( $_POST['progress_token'] ) ) : '';
+		$progress_total  = max( 1, count( $manifest['assets'] ) + count( $manifest['posts'] ) );
+		$progress_done   = 0;
+		self::set_progress( $progress_token, 0, $progress_total, '正在准备导入' );
+		$asset_map       = self::import_assets( $zip, $manifest['assets'], $result, $progress_token, $progress_done, $progress_total );
 		$source_url      = isset( $manifest['source_url'] ) ? esc_url_raw( $manifest['source_url'] ) : '';
 
 		foreach ( $manifest['posts'] as $index => $item ) {
+			$current_title = is_array( $item ) && ! empty( $item['title'] ) ? sanitize_text_field( $item['title'] ) : '第 ' . ( $index + 1 ) . ' 条文章';
+			self::set_progress( $progress_token, $progress_done, $progress_total, '正在导入文章', $current_title );
 			if ( ! is_array( $item ) ) {
 				$result['failed_posts'][] = array(
 					'title'  => '第 ' . ( $index + 1 ) . ' 条文章',
 					'reason' => '迁移包中的文章数据格式无效。',
 				);
+				++$progress_done;
+				self::set_progress( $progress_token, $progress_done, $progress_total, '正在导入文章', $current_title );
 				continue;
 			}
 			$title     = sanitize_text_field( isset( $item['title'] ) ? $item['title'] : '' );
@@ -742,12 +833,16 @@ final class MaoTK_Blog_Media_Migrator {
 					'title'  => '第 ' . ( $index + 1 ) . ' 条文章',
 					'reason' => '文章缺少标题。',
 				);
+				++$progress_done;
+				self::set_progress( $progress_token, $progress_done, $progress_total, '正在导入文章', $current_title );
 				continue;
 			}
 
 			$existing_id = self::find_existing_post( $source_url, $source_id, $slug );
 			if ( $existing_id && ! $update_existing ) {
 				++$result['skipped'];
+				++$progress_done;
+				self::set_progress( $progress_token, $progress_done, $progress_total, '正在导入文章', $title );
 				continue;
 			}
 
@@ -788,6 +883,8 @@ final class MaoTK_Blog_Media_Migrator {
 					'title'  => $title,
 					'reason' => '文章写入失败：' . ( is_wp_error( $post_id ) ? $post_id->get_error_message() : '数据库未返回文章 ID' ),
 				);
+				++$progress_done;
+				self::set_progress( $progress_token, $progress_done, $progress_total, '正在导入文章', $title );
 				continue;
 			}
 
@@ -808,17 +905,21 @@ final class MaoTK_Blog_Media_Migrator {
 			} else {
 				++$result['created'];
 			}
+			++$progress_done;
+			self::set_progress( $progress_token, $progress_done, $progress_total, '正在导入文章', $title );
 		}
 
 		$zip->close();
+		self::set_progress( $progress_token, $progress_total, $progress_total, '导入完成', '', 'finished' );
 		set_transient( 'maotk_bmm_result_' . get_current_user_id(), $result, 15 * MINUTE_IN_SECONDS );
 		wp_safe_redirect( admin_url( 'tools.php?page=' . self::PAGE ) );
 		exit;
 	}
 
-	private static function import_assets( ZipArchive $zip, $assets, &$result ) {
+	private static function import_assets( ZipArchive $zip, $assets, &$result, $progress_token, &$progress_done, $progress_total ) {
 		$map = array();
 		foreach ( $assets as $old_url => $asset ) {
+			self::set_progress( $progress_token, $progress_done, $progress_total, '正在导入图片', wp_basename( (string) wp_parse_url( $old_url, PHP_URL_PATH ) ) );
 			$old_url = esc_url_raw( $old_url, array( 'http', 'https' ) );
 			if ( ! $old_url || ! is_array( $asset ) || empty( $asset['file'] ) ) {
 				if ( $old_url && ! empty( $asset['error'] ) ) {
@@ -828,6 +929,8 @@ final class MaoTK_Blog_Media_Migrator {
 						'reason' => '旧站导出时未能打包：' . sanitize_text_field( $asset['error'] ),
 					);
 				}
+				++$progress_done;
+				self::set_progress( $progress_token, $progress_done, $progress_total, '正在导入图片', wp_basename( (string) wp_parse_url( $old_url, PHP_URL_PATH ) ) );
 				continue;
 			}
 			$imported = self::import_one_asset( $zip, $asset, $old_url );
@@ -837,12 +940,16 @@ final class MaoTK_Blog_Media_Migrator {
 					'url'    => $old_url,
 					'reason' => $imported->get_error_message(),
 				);
+				++$progress_done;
+				self::set_progress( $progress_token, $progress_done, $progress_total, '正在导入图片', wp_basename( (string) wp_parse_url( $old_url, PHP_URL_PATH ) ) );
 				continue;
 			}
 			$map[ $old_url ] = $imported;
 			if ( ! empty( $imported['created'] ) ) {
 				++$result['images'];
 			}
+			++$progress_done;
+			self::set_progress( $progress_token, $progress_done, $progress_total, '正在导入图片', wp_basename( (string) wp_parse_url( $old_url, PHP_URL_PATH ) ) );
 		}
 		return $map;
 	}

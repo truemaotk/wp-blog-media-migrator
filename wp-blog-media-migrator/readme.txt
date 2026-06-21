@@ -3,7 +3,7 @@ Contributors: maotk
 Tags: posts, images, migration, views
 Requires at least: 5.8
 Requires PHP: 7.4
-Stable tag: 1.2.1
+Stable tag: 1.3.0
 License: GPLv2 or later
 
 在 WordPress 网站之间迁移博客文章、正文、分类标签、特色图、正文图片和阅读量。
@@ -36,6 +36,13 @@ License: GPLv2 or later
 * 如果取消“保留原文章状态”，所有文章都会先保存为草稿。
 
 == 更新记录 ==
+
+= 1.3.0 =
+
+* 使用服务器实际完成任务数显示真实百分比。
+* 显示当前处理阶段、文章或图片名称。
+* 根据实际处理速度动态估算剩余时间。
+* 导入时合并图片和文章任务计算总体进度。
 
 = 1.2.1 =
 
