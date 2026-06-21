@@ -3,7 +3,7 @@
  * Plugin Name: 博客文章与图片迁移工具
  * Plugin URI: https://www.maotk.com/
  * Description: 在 WordPress 网站之间迁移博客文章、正文、分类标签、特色图、正文图片和阅读量。
- * Version: 1.3.1
+ * Version: 1.3.2
  * Author: Mao TK
  * Author URI: https://www.maotk.com/
  * Requires at least: 5.8
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class MaoTK_Blog_Media_Migrator {
-	const VERSION           = '1.3.1';
+	const VERSION           = '1.3.2';
 	const PAGE              = 'maotk-blog-media-migrator';
 	const BRAND_URL         = 'https://www.maotk.com/';
 	const BRAND_LOGO        = 'https://www.maotk.com/wp-content/uploads/maotk-favicon.svg';
@@ -341,8 +341,7 @@ final class MaoTK_Blog_Media_Migrator {
 				etaText.textContent = '预计剩余：0 秒';
 				enableClose();
 				title.textContent = '导出完成';
-				text.textContent = '已打包 ' + count + ' 篇文章，浏览器应已开始下载迁移包。';
-				window.setTimeout(function () { overlay.style.display = 'none'; }, 2200);
+				text.textContent = '已打包 ' + count + ' 篇文章，浏览器应已开始下载迁移包。请点击关闭按钮。';
 			}
 
 			const exportForm = document.getElementById('maotk-bmm-export-form');
