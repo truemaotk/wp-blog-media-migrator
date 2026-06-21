@@ -3,7 +3,7 @@
  * Plugin Name: 博客文章与图片迁移工具
  * Plugin URI: https://www.maotk.com/
  * Description: 在 WordPress 网站之间迁移博客文章、正文、分类标签、特色图、正文图片和阅读量。
- * Version: 1.3.0
+ * Version: 1.3.1
  * Author: Mao TK
  * Author URI: https://www.maotk.com/
  * Requires at least: 5.8
@@ -16,7 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class MaoTK_Blog_Media_Migrator {
-	const VERSION           = '1.3.0';
+	const VERSION           = '1.3.1';
 	const PAGE              = 'maotk-blog-media-migrator';
 	const BRAND_URL         = 'https://www.maotk.com/';
 	const BRAND_LOGO        = 'https://www.maotk.com/wp-content/uploads/maotk-favicon.svg';
@@ -229,7 +229,8 @@ final class MaoTK_Blog_Media_Migrator {
 			</div>
 			<iframe name="maotk-bmm-download-frame" title="文章迁移包下载" style="display:none"></iframe>
 			<div id="maotk-bmm-progress" style="display:none;position:fixed;z-index:100000;inset:0;background:rgba(0,0,0,.48);align-items:center;justify-content:center;">
-				<div style="width:min(560px,calc(100vw - 40px));background:#fff;border-radius:8px;padding:24px;box-shadow:0 12px 50px rgba(0,0,0,.28);">
+				<div style="position:relative;width:min(560px,calc(100vw - 40px));background:#fff;border-radius:8px;padding:24px;box-shadow:0 12px 50px rgba(0,0,0,.28);">
+					<button type="button" id="maotk-bmm-progress-close-x" aria-label="关闭" style="display:none;position:absolute;right:14px;top:12px;border:0;background:transparent;font-size:25px;line-height:1;cursor:pointer;color:#646970">&times;</button>
 					<h2 id="maotk-bmm-progress-title" style="margin-top:0">正在处理</h2>
 					<p id="maotk-bmm-progress-text">正在准备，请不要关闭页面。</p>
 					<div style="height:18px;background:#e5e7eb;border-radius:999px;overflow:hidden;">
@@ -237,6 +238,7 @@ final class MaoTK_Blog_Media_Migrator {
 					</div>
 					<p style="display:flex;justify-content:space-between;margin:10px 0 0"><strong id="maotk-bmm-progress-percent">0%</strong><span id="maotk-bmm-progress-eta">预计剩余：计算中</span></p>
 					<p id="maotk-bmm-progress-time" style="color:#646970;margin-bottom:0">已用时：0 秒</p>
+					<p id="maotk-bmm-progress-actions" style="display:none;text-align:right;margin:18px 0 0"><button type="button" class="button button-primary" id="maotk-bmm-progress-close">关闭</button></p>
 				</div>
 			</div>
 		</div>
@@ -249,11 +251,27 @@ final class MaoTK_Blog_Media_Migrator {
 			const time = document.getElementById('maotk-bmm-progress-time');
 			const percentText = document.getElementById('maotk-bmm-progress-percent');
 			const etaText = document.getElementById('maotk-bmm-progress-eta');
+			const closeX = document.getElementById('maotk-bmm-progress-close-x');
+			const closeButton = document.getElementById('maotk-bmm-progress-close');
+			const actions = document.getElementById('maotk-bmm-progress-actions');
 			const ajaxUrl = <?php echo wp_json_encode( admin_url( 'admin-ajax.php' ) ); ?>;
 			const progressNonce = <?php echo wp_json_encode( $progress_nonce ); ?>;
 			let timer = null;
 			let progressPoll = null;
 			let startedAt = 0;
+			let activeMode = '';
+
+			function closeProgress() {
+				overlay.style.display = 'none';
+				window.clearInterval(timer);
+				window.clearInterval(progressPoll);
+			}
+			function enableClose() {
+				closeX.style.display = 'block';
+				actions.style.display = 'block';
+			}
+			closeX.addEventListener('click', closeProgress);
+			closeButton.addEventListener('click', closeProgress);
 
 			function cookieValue(name) {
 				const match = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/([.$?*|{}()[\]\\/+^])/g, '\\$1') + '=([^;]*)'));
@@ -286,6 +304,10 @@ final class MaoTK_Blog_Media_Migrator {
 					const elapsed = Math.max(1, Date.now() / 1000 - (Number(data.started_at) || startedAt / 1000));
 					const rate = completed / elapsed;
 					etaText.textContent = rate > 0 && completed < total ? '预计剩余：' + formatDuration((total - completed) / rate) : (completed >= total ? '预计剩余：0 秒' : '预计剩余：计算中');
+					if (data.status === 'finished') {
+						title.textContent = activeMode === 'export' ? '导出完成' : '导入完成';
+						enableClose();
+					}
 				} catch (error) {
 					etaText.textContent = '预计剩余：等待服务器进度';
 				}
@@ -293,7 +315,10 @@ final class MaoTK_Blog_Media_Migrator {
 			function startProgress(mode, token) {
 				let seconds = 0;
 				startedAt = Date.now();
+				activeMode = mode;
 				overlay.style.display = 'flex';
+				closeX.style.display = 'none';
+				actions.style.display = 'none';
 				title.textContent = mode === 'export' ? '正在导出文章' : '正在导入文章';
 				text.textContent = mode === 'export'
 					? '正在收集文章、阅读量和图片，并生成 ZIP 迁移包。'
@@ -314,6 +339,7 @@ final class MaoTK_Blog_Media_Migrator {
 				bar.style.width = '100%';
 				percentText.textContent = '100%（' + count + ' / ' + count + '）';
 				etaText.textContent = '预计剩余：0 秒';
+				enableClose();
 				title.textContent = '导出完成';
 				text.textContent = '已打包 ' + count + ' 篇文章，浏览器应已开始下载迁移包。';
 				window.setTimeout(function () { overlay.style.display = 'none'; }, 2200);

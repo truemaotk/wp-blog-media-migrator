@@ -23,7 +23,7 @@
 
 最新可安装包：
 
-[`dist/wp-blog-media-migrator-1.3.0.zip`](dist/wp-blog-media-migrator-1.3.0.zip)
+[`dist/wp-blog-media-migrator-1.3.1.zip`](dist/wp-blog-media-migrator-1.3.1.zip)
 
 安装步骤：
 
@@ -184,6 +184,7 @@ post_max_size = 1024M
 - 本插件不迁移评论、页面、商品、用户、主题设置或整个数据库。
 - 定时文章依赖新站时区和 WordPress 定时任务，请导入后检查发布时间。
 - 进度条按实际完成的图片和文章任务显示百分比，并根据当前处理速度估算剩余时间。
+- 完成时会显示右上角和底部关闭按钮；即使浏览器下载事件没有及时返回，也可以手动关闭窗口。
 - 完成后抽查正文格式、图片、特色图、阅读量和私密权限。
 
 ## 常见问题
